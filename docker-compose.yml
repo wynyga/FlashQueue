@@ -1,0 +1,57 @@
+# Only two ports are published to your machine: the API (8081) and the RabbitMQ management UI (15673).
+# Everything else talks over the compose network, so this will not clash with a RabbitMQ or Redis you
+# already run on 5672 / 6379.
+#
+#   docker compose up -d --build
+#   docker compose up -d --scale worker=3     # more workers
+name: flashqueue
+
+x-env: &env
+  AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+  REDIS_ADDR: redis:6379
+  WORK_MS: "${WORK_MS:-50}" # how long one order takes to process (stand-in for payment, email, ...)
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "15673:15672" # management UI, login guest / guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: { context: ., args: { CMD: api } }
+    ports:
+      - "8081:8080"
+    environment:
+      <<: *env
+      STOCK_INIT: "500"
+      MAX_QUEUE: "20000" # beyond this many waiting orders the API answers 503 (backpressure)
+      SYNC_CONCURRENCY: "8" # capacity of the no-queue path, equal to one worker pool
+      ADMIN_KEY: dev-admin # lets the check tool reset between runs; development only
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+
+  worker:
+    build: { context: ., args: { CMD: worker } }
+    environment:
+      <<: *env
+      WORKERS: "${WORKERS:-8}"
+      FAIL_PCT: "${FAIL_PCT:-0}" # percent of attempts that fail on purpose, to exercise retry and the dead-letter queue
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
