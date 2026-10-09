@@ -99,15 +99,25 @@ the absolute numbers say little about real hardware.
 | peak backlog | about 2,900 orders waiting |
 | after the burst | queue empty a few seconds later; 500 confirmed, 18,193 sold out, never oversold |
 
+![Grafana during one k6 burst](docs/grafana.png)
+
+*One run of the test above (200 virtual users, 3 workers, one laptop; the times are UTC). k6 reported 19,581
+orders at about 430 per second, p95 991 ms, 0% failed. The dashboard's p95 line (about 2 s here) is a
+Prometheus estimate from coarse histogram buckets, and at the busiest moments it reads higher than k6's own
+whole-run figure.*
+
 Reading it honestly:
 
 - The workers topped out at about 465 orders per second, which is what the arithmetic predicts
   (3 containers x 8 slots / 50 ms = 480). The backlog is what absorbed the difference.
-- At the busiest moments Grafana showed the API's p95 well above 1 s, even though k6's p95 over the whole
-  run was 654 ms. Two reasons: the whole-run figure includes the quiet ramp-up, and Prometheus estimates
-  percentiles from coarse histogram buckets (here the estimate even exceeded k6's slowest request, 3.6 s,
-  so it overstates). The API itself was close to saturated at its peak on this machine. I have not tuned
-  it, and I have not profiled where the time goes, so I will not guess.
+- **Latency varies a lot from run to run on this laptop.** In the run above, Grafana's p95 estimate at the
+  busiest moments went well above 1 s while k6 reported 654 ms for the whole run; in another run of the
+  same test the dashboard showed a p95 of about 0.5 s and a p99 under 1 s at the same arrival rate. k6's own
+  whole-run p95 for three runs of the identical test was 316 ms, 654 ms and 991 ms. Part of
+  the gap is method: k6's figure covers the quiet ramp-up too, and Prometheus estimates percentiles from
+  coarse histogram buckets (once its estimate even exceeded k6's slowest request, 3.6 s, so it can
+  overstate). The rest is noise from everything sharing one CPU. Read the latency numbers as a range, not a
+  single value. I have not tuned the API or profiled where its time goes, so I will not guess at a cause.
 
 **Queue versus no queue** (`cmd/check`): 3000 orders from 200 concurrent clients for 100 units, one worker container (8 slots x 50 ms, so about 160
 orders/s of capacity). Docker Desktop on a Windows laptop, the load generator running in a container, no
