@@ -300,10 +300,19 @@ func (s *server) reset(ch *amqp.Channel) http.HandlerFunc {
 			stock = v
 		}
 		ctx := r.Context()
+		// Delete in batches: after a big run there are tens of thousands of keys, and one round trip per
+		// key would take seconds.
 		for _, pattern := range []string{"order:*", "idem:*"} {
+			var batch []string
 			iter := s.rdb.Scan(ctx, 0, pattern, 1000).Iterator()
 			for iter.Next(ctx) {
-				s.rdb.Del(ctx, iter.Val())
+				if batch = append(batch, iter.Val()); len(batch) >= 1000 {
+					s.rdb.Unlink(ctx, batch...)
+					batch = batch[:0]
+				}
+			}
+			if len(batch) > 0 {
+				s.rdb.Unlink(ctx, batch...)
 			}
 		}
 		s.rdb.Del(ctx, shared.KeyStats)

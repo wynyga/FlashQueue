@@ -29,8 +29,9 @@ client ──► api ──► Redis   idempotency key, order state, stock
 
 ## Run it
 
-Needs Docker. Only ports **8081** (API) and **15673** (RabbitMQ UI, `guest` / `guest`) are published, so it
-will not clash with a RabbitMQ or Redis you already run on 5672 / 6379.
+Needs Docker. Only these ports are published, so it will not clash with a RabbitMQ or Redis you already
+run on 5672 / 6379: **8081** (API), **15673** (RabbitMQ UI, `guest` / `guest`), **3001** (Grafana, no login),
+**9091** (Prometheus).
 
 ```bash
 docker compose up -d --build
@@ -63,9 +64,52 @@ go run ./cmd/check -n 3000 -c 200 -stock 100 -sync      # no queue, for comparis
 FAIL_PCT=40 docker compose up -d worker                 # then run it again: retries and the DLQ kick in
 ```
 
+## Watch it, and load it
+
+Prometheus scrapes `/metrics` from the API and from every worker every 2 seconds (new workers from
+`--scale` are found automatically), and Grafana draws a ready-made dashboard at **http://localhost:3001**:
+queue depth, orders arriving, orders decided, time to get an answer, time a worker spends on one order,
+workers up, and the dead-letter queue.
+
+The numbers on the dashboard come from the services themselves. The traffic comes from **k6**, which plays
+a crowd of virtual buyers. It is a synthetic load test, not real visitors.
+
+```bash
+docker compose up -d --scale worker=3
+docker compose run --rm k6                  # ramp to 200 virtual users, hold 30 s, leave
+VUS=400 HOLD=60s docker compose run --rm k6
+```
+
+Open the dashboard while it runs: the queue climbs, the workers chew through it, and it drains. The k6
+run fails (non-zero exit) if the API's p95 passes 1 s or more than 1% of requests error.
+
 ## What I measured
 
-3000 orders from 200 concurrent clients for 100 units, one worker container (8 slots x 50 ms, so about 160
+**k6 load test**: 200 virtual users ramping up over 10 s, holding 30 s, then leaving, each buying with a short
+random pause; 500 units for sale, 3 worker containers. Everything ran on one Windows laptop under Docker
+Desktop, **with k6, Prometheus, Grafana, RabbitMQ, Redis, the API and the workers all sharing its CPU**, so
+the absolute numbers say little about real hardware.
+
+| | |
+| --- | --- |
+| orders sent and accepted | 18,693 in 45 s (about 410 per second on average) |
+| failed or rejected requests | 0 (0.00%) |
+| time to get an answer, k6 | median 119 ms, p95 654 ms, slowest 3.6 s |
+| peak arrivals / peak decided (Grafana) | 613 / 465 orders per second |
+| peak backlog | about 2,900 orders waiting |
+| after the burst | queue empty a few seconds later; 500 confirmed, 18,193 sold out, never oversold |
+
+Reading it honestly:
+
+- The workers topped out at about 465 orders per second, which is what the arithmetic predicts
+  (3 containers x 8 slots / 50 ms = 480). The backlog is what absorbed the difference.
+- At the busiest moments Grafana showed the API's p95 well above 1 s, even though k6's p95 over the whole
+  run was 654 ms. Two reasons: the whole-run figure includes the quiet ramp-up, and Prometheus estimates
+  percentiles from coarse histogram buckets (here the estimate even exceeded k6's slowest request, 3.6 s,
+  so it overstates). The API itself was close to saturated at its peak on this machine. I have not tuned
+  it, and I have not profiled where the time goes, so I will not guess.
+
+**Queue versus no queue** (`cmd/check`): 3000 orders from 200 concurrent clients for 100 units, one worker container (8 slots x 50 ms, so about 160
 orders/s of capacity). Docker Desktop on a Windows laptop, the load generator running in a container, no
 tuning, one run each. **Treat these as shape, not as a benchmark.**
 

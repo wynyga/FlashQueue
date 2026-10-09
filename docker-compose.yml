@@ -55,3 +55,43 @@ services:
       rabbitmq: { condition: service_healthy }
       redis: { condition: service_healthy }
     restart: unless-stopped
+
+  # ---- monitoring: Prometheus scrapes the services, Grafana draws them -------------------------------
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2d"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9091:9090"
+    depends_on: [api, worker]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true" # open http://localhost:3001 with no login (local demo only)
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/flashqueue.json
+      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 1s
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3001:3000"
+    depends_on: [prometheus]
+    restart: unless-stopped
+
+  # ---- load test: only runs when asked (`docker compose run --rm k6`) --------------------------------
+  k6:
+    image: grafana/k6:latest
+    profiles: ["loadtest"]
+    command: ["run", "/scripts/burst.js"]
+    environment:
+      BASE_URL: http://api:8080
+      VUS: "${VUS:-200}"
+      HOLD: "${HOLD:-30s}"
+      STOCK: "${STOCK:-500}"
+    volumes:
+      - ./loadtest:/scripts:ro
+    depends_on: [api]
